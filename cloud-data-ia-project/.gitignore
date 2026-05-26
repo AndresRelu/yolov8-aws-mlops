@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.zip
+*.tar.gz
+data/raw/
+data/kitti/
+.env
+__pycache__/
+.venv/
