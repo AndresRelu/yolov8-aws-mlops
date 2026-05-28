@@ -2,10 +2,13 @@ import os
 import io
 import argparse
 import random
+import sys
 import yaml
 import pandas as pd
 import boto3
+from botocore.config import Config
 from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 CLASS_MAP = {
@@ -26,14 +29,57 @@ def parse_args():
     parser.add_argument("--sample-size", type=int, default=None, help="Cantidad de imágenes para procesamiento de prueba")
     parser.add_argument("--profile", default=None, help="Perfil de AWS CLI (opcional)")
     parser.add_argument("--region", default="us-east-1", help="Región de AWS")
+    parser.add_argument("--workers", type=int, default=32, help="Cantidad de imágenes a procesar en paralelo")
+    parser.add_argument("--max-attempts", type=int, default=20, help="Reintentos máximos por operación S3")
     return parser.parse_args()
+
+
+def process_image(s3_client, args, img_id, annotations, split_dir):
+    image_key = f"images/{img_id}.png"
+    img_obj = s3_client.get_object(Bucket=args.raw_bucket, Key=image_key)
+    img_bytes = img_obj["Body"].read()
+
+    with Image.open(io.BytesIO(img_bytes)) as img:
+        img_w, img_h = img.size
+
+    yolo_lines = []
+    for row in annotations:
+        class_name = row["class_name"]
+        if class_name not in CLASS_MAP:
+            continue
+
+        class_id = CLASS_MAP[class_name]
+        center_x = row["center_x_pixels"] / img_w
+        center_y = row["center_y_pixels"] / img_h
+        width = row["bbox_width"] / img_w
+        height = row["bbox_height"] / img_h
+        yolo_lines.append(f"{class_id} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}")
+
+    s3_client.copy_object(
+        Bucket=args.curated_bucket,
+        CopySource={"Bucket": args.raw_bucket, "Key": image_key},
+        Key=f"{args.output_prefix}images/{split_dir}/{img_id}.png",
+    )
+
+    s3_client.put_object(
+        Bucket=args.curated_bucket,
+        Key=f"{args.output_prefix}labels/{split_dir}/{img_id}.txt",
+        Body="\n".join(yolo_lines).encode("utf-8"),
+    )
+
+    return split_dir
 
 def main():
     args = parse_args()
 
     # Configuración de sesión AWS
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
-    s3_client = session.client('s3')
+    s3_config = Config(
+        retries={"max_attempts": args.max_attempts, "mode": "adaptive"},
+        max_pool_connections=max(args.workers * 3, 10),
+        s3={"us_east_1_regional_endpoint": "regional"},
+    )
+    s3_client = session.client('s3', config=s3_config)
     s3_resource = session.resource('s3')
 
     print("🚀 Descargando y leyendo metadatos Parquet desde S3...")
@@ -74,71 +120,39 @@ def main():
     
     print(f"📈 Split completado: {len(train_ids)} para Entrenamiento (Train) | {len(val_ids)} para Validación (Val)")
 
-    # Diccionario local temporal para acumular líneas YOLO antes de subirlas
-    # Estructura: { image_id: [ "class_id cx cy w h", ... ] }
-    yolo_annotations = {img_id: [] for img_id in all_image_ids}
+    annotation_groups = {
+        image_id: group.to_dict("records")
+        for image_id, group in full_df.groupby("image_id", sort=False)
+    }
 
     print("🖼️ Procesando dimensiones de imágenes y calculando normalizaciones YOLO...")
-    for img_id in tqdm(all_image_ids):
-        # Filtrar las anotaciones correspondientes a esta imagen en específico
-        img_annotations = full_df[full_df['image_id'] == img_id]
-        
-        # Intentar obtener el tamaño real de la imagen leyendo solo su cabecera desde S3 (Optimizado)
-        # Formato KITTI común: images/000001.png
-        image_key = f"images/{img_id}.png"
-        try:
-            img_obj = s3_client.get_object(Bucket=args.raw_bucket, Key=image_key)
-            img_bytes = img_obj['Body'].read()
-            with Image.open(io.BytesIO(img_bytes)) as img:
-                img_w, img_h = img.size
-        except Exception as e:
-            print(f"⚠️ Ignorando imagen {image_key} por error de lectura: {e}")
-            continue
+    failures = []
+    split_by_image = {img_id: "train" if img_id in train_ids else "val" for img_id in all_image_ids}
 
-        # Procesar cada bounding box de la imagen
-        for _, row in img_annotations.iterrows():
-            class_name = row['class_name']
-            if class_name not in CLASS_MAP:
-                continue
-            
-            class_id = CLASS_MAP[class_name]
-            
-            # Recuperar pixeles calculados en la fase A5
-            cx_p = row['center_x_pixels']
-            cy_p = row['center_y_pixels']
-            bw_p = row['bbox_width']
-            bh_p = row['bbox_height']
-            
-            # 3. Fórmulas de Normalización YOLO reales en rango [0, 1]
-            center_x = cx_p / img_w
-            center_y = cy_p / img_h
-            width = bw_p / img_w
-            height = bh_p / img_h
-            
-            # Formatear línea estándar de etiquetas YOLO
-            yolo_line = f"{class_id} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}"
-            yolo_annotations[img_id].append(yolo_line)
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(
+                process_image,
+                s3_client,
+                args,
+                img_id,
+                annotation_groups.get(img_id, []),
+                split_by_image[img_id],
+            ): img_id
+            for img_id in all_image_ids
+        }
 
-        # Determinar destino en función del split
-        split_dir = "train" if img_id in train_ids else "val"
-        
-        # 5. Copiar la imagen directo en S3 al destino Curated estructurado
-        dest_image_key = f"{args.output_prefix}images/{split_dir}/{img_id}.png"
-        # Usamos S3 CopyObject para no re-subir la imagen desde la máquina local
-        s3_client.copy_object(
-            Bucket=args.curated_bucket,
-            CopySource={'Bucket': args.raw_bucket, 'Key': image_key},
-            Key=dest_image_key
-        )
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            img_id = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                failures.append((img_id, str(e)))
+                tqdm.write(f"⚠️ Ignorando imagen images/{img_id}.png por error de lectura/procesamiento: {e}")
 
-        # 6. Escribir y subir el archivo .txt de etiquetas normalizadas a S3
-        label_content = "\n".join(yolo_annotations[img_id])
-        dest_label_key = f"{args.output_prefix}labels/{split_dir}/{img_id}.txt"
-        s3_client.put_object(
-            Bucket=args.curated_bucket,
-            Key=dest_label_key,
-            Body=label_content.encode('utf-8')
-        )
+    if failures:
+        print(f"❌ Fallaron {len(failures)} imágenes. Vuelve a ejecutar el script para reintentar.")
+        return 1
 
     # 7. Generar kitti.yaml estructurado para el contenedor de SageMaker
     yaml_data = {
@@ -161,6 +175,7 @@ def main():
 
     print(f"🎉 ¡Dataset YOLOv8 generado exitosamente!")
     print(f"📂 Ubicación del manifiesto: s3://{args.curated_bucket}/{yaml_key}")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
