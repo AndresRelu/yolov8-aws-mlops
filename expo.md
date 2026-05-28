@@ -538,3 +538,17 @@ Después de la demo: terraform destroy (o apagar endpoint manualmente)
 ---
 
 *Documento generado para la exposición del proyecto Cloud Data IA — Mayo 2026.*
+
+
+storage/ — Crea las carpetas gigantes (buckets S3) donde vive todo. Sin esto, nada más puede existir.
+
+data-eng/ — Crea las herramientas que limpian los datos. El Crawler los examina, el Job de Glue los transforma y los deja listos para entrenar.
+
+ai-inference/ — Crea todo lo relacionado con el modelo: lo entrena con SageMaker, lo despliega como endpoint, y monta la API (/predict, /health) con Lambda y API Gateway para que el mundo pueda usarlo.
+
+frontend/ — Publica la página web. Sube el HTML/CSS/JS a S3 y lo sirve por CloudFront con HTTPS.
+
+orchestration/ — Crea el "director de orquesta" (Step Functions) que une todo el pipeline en orden: Glue → Lambda → SageMaker → notificación. También crea el canal de correos (SNS).
+
+observability/ — Crea los "ojos" del sistema: logs, métricas, dashboard y alarmas en CloudWatch para saber si algo falla o va lento.
+
