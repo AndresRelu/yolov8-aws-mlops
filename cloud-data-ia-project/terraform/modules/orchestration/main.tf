@@ -13,7 +13,7 @@ locals {
   sagemaker_source_uri = "s3://${var.model_artifacts_bucket}/sagemaker/source/sourcedir.tar.gz"
   training_output_uri  = "s3://${var.model_artifacts_bucket}/training-output/"
   training_image       = var.training_instance_type == "ml.g4dn.xlarge" ? "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-gpu-py312-cu126-ubuntu22.04-sagemaker" : "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
-  inference_image      = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+  inference_image      = var.endpoint_instance_type == "ml.g4dn.xlarge" ? "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-gpu-py312-cu126-ubuntu22.04-sagemaker" : "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
 }
 
 resource "aws_sns_topic" "detections" {
@@ -106,9 +106,12 @@ resource "aws_lambda_function" "prepare_yolo_dataset" {
 
   environment {
     variables = {
-      RAW_BUCKET     = var.raw_bucket_name
-      CURATED_BUCKET = var.curated_bucket_name
-      YOLO_PREFIX    = "yolo_dataset/"
+      RAW_BUCKET              = var.raw_bucket_name
+      CURATED_BUCKET          = var.curated_bucket_name
+      DEFAULT_DEPLOY_ENDPOINT = tostring(var.deploy_sagemaker_endpoint)
+      DEFAULT_MODE            = var.mode
+      DEFAULT_SAMPLE_SIZE     = "100"
+      YOLO_PREFIX             = "yolo_dataset/"
     }
   }
 
@@ -272,7 +275,8 @@ resource "aws_iam_role_policy" "step_functions_policy" {
           "sagemaker:CreateModel",
           "sagemaker:CreateEndpointConfig",
           "sagemaker:UpdateEndpoint",
-          "sagemaker:DescribeEndpoint"
+          "sagemaker:DescribeEndpoint",
+          "sagemaker:AddTags"
         ]
         Resource = [
           "arn:aws:sagemaker:${var.aws_region}:${var.account_id}:training-job/kitti-yolov8-training-*",
@@ -324,21 +328,27 @@ resource "aws_sfn_state_machine" "kitti_pipeline" {
   type     = "STANDARD"
 
   definition = templatefile("${path.root}/../src/step_functions/workflow.json", {
-    aws_region                  = var.aws_region
-    dataset_uri                 = local.dataset_uri
-    endpoint_instance_type      = var.endpoint_instance_type
-    glue_crawler_name           = var.glue_crawler_name
-    glue_job_name               = var.glue_job_name
-    inference_image             = local.inference_image
-    prepare_yolo_lambda_arn     = aws_lambda_function.prepare_yolo_dataset.arn
-    sagemaker_endpoint_name     = var.sagemaker_endpoint_name
-    sagemaker_role_arn          = var.sagemaker_role_arn
-    sagemaker_source_uri        = local.sagemaker_source_uri
-    sns_topic_arn               = aws_sns_topic.detections.arn
-    training_image              = local.training_image
-    training_instance_type      = var.training_instance_type
-    training_results_lambda_arn = aws_lambda_function.training_results_notifier.arn
-    training_output_uri         = local.training_output_uri
+    aws_region                   = var.aws_region
+    dataset_uri                  = local.dataset_uri
+    endpoint_instance_type       = var.endpoint_instance_type
+    glue_crawler_name            = var.glue_crawler_name
+    glue_job_name                = var.glue_job_name
+    inference_image              = local.inference_image
+    prepare_yolo_lambda_arn      = aws_lambda_function.prepare_yolo_dataset.arn
+    sagemaker_endpoint_name      = var.sagemaker_endpoint_name
+    sagemaker_role_arn           = var.sagemaker_role_arn
+    sagemaker_source_uri         = local.sagemaker_source_uri
+    sns_topic_arn                = aws_sns_topic.detections.arn
+    mode                         = var.mode
+    epochs                       = var.epochs
+    training_image_size          = var.training_image_size
+    training_batch_size          = var.training_batch_size
+    yolo_model                   = var.yolo_model
+    training_max_runtime_seconds = var.training_max_runtime_seconds
+    training_image               = local.training_image
+    training_instance_type       = var.training_instance_type
+    training_results_lambda_arn  = aws_lambda_function.training_results_notifier.arn
+    training_output_uri          = local.training_output_uri
   })
 
   logging_configuration {

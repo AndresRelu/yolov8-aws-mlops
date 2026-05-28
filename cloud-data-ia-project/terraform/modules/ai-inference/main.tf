@@ -11,6 +11,8 @@ locals {
   sagemaker_source_key = "sagemaker/source/sourcedir.tar.gz"
   model_artifact_key   = "training-output/${aws_sagemaker_training_job.kitti_yolov8_training.training_job_name}/output/model.tar.gz"
   model_artifact_uri   = "s3://${var.model_artifacts_bucket_name}/${local.model_artifact_key}"
+  training_image       = var.training_instance_type == "ml.g4dn.xlarge" ? "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-gpu-py312-cu126-ubuntu22.04-sagemaker" : "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+  inference_image      = var.endpoint_instance_type == "ml.g4dn.xlarge" ? "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-gpu-py312-cu126-ubuntu22.04-sagemaker" : "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
 }
 
 # ==========================================
@@ -122,11 +124,11 @@ resource "aws_s3_object" "sagemaker_source" {
 # 3. SAGEMAKER TRAINING + ENDPOINT
 # ==========================================
 resource "aws_sagemaker_training_job" "kitti_yolov8_training" {
-  training_job_name = "kitti-yolov8-training"
+  training_job_name = "kitti-yolov8-training-${var.mode}"
   role_arn          = aws_iam_role.sagemaker_role.arn
 
   algorithm_specification {
-    training_image      = var.training_instance_type == "ml.g4dn.xlarge" ? "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-gpu-py312-cu126-ubuntu22.04-sagemaker" : "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-training:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+    training_image      = local.training_image
     training_input_mode = "File"
   }
 
@@ -153,16 +155,17 @@ resource "aws_sagemaker_training_job" "kitti_yolov8_training" {
   }
 
   stopping_condition {
-    max_runtime_in_seconds = 7200
+    max_runtime_in_seconds = var.training_max_runtime_seconds
   }
 
   hyper_parameters = {
+    mode                       = var.mode
     sagemaker_program          = "train.py"
     sagemaker_submit_directory = "s3://${var.model_artifacts_bucket_name}/sagemaker/source/sourcedir.tar.gz"
-    epochs                     = "5"
-    imgsz                      = "640"
-    batch                      = "8"
-    model                      = "yolov8n.pt"
+    epochs                     = tostring(var.epochs)
+    imgsz                      = tostring(var.training_image_size)
+    batch                      = tostring(var.training_batch_size)
+    model                      = var.yolo_model
   }
 
   tags = local.ai_tags
@@ -219,11 +222,13 @@ resource "terraform_data" "wait_for_training_artifact" {
 }
 
 resource "aws_sagemaker_model" "kitti_model" {
-  name               = "kitti-yolov8-model"
+  count = var.deploy_sagemaker_endpoint ? 1 : 0
+
+  name               = "kitti-yolov8-model-${var.mode}"
   execution_role_arn = aws_iam_role.sagemaker_role.arn
 
   primary_container {
-    image          = "763104351884.dkr.ecr.us-east-1.amazonaws.com/pytorch-inference:2.6.0-cpu-py312-ubuntu22.04-sagemaker"
+    image          = local.inference_image
     model_data_url = local.model_artifact_uri
 
     environment = {
@@ -240,11 +245,13 @@ resource "aws_sagemaker_model" "kitti_model" {
 }
 
 resource "aws_sagemaker_endpoint_configuration" "kitti_endpoint_config" {
-  name = "kitti-yolov8-endpoint-config"
+  count = var.deploy_sagemaker_endpoint ? 1 : 0
+
+  name = "kitti-yolov8-endpoint-config-${var.mode}"
 
   production_variants {
     variant_name           = "AllTraffic"
-    model_name             = aws_sagemaker_model.kitti_model.name
+    model_name             = aws_sagemaker_model.kitti_model[0].name
     instance_type          = var.endpoint_instance_type
     initial_instance_count = 1
   }
@@ -256,7 +263,7 @@ resource "aws_sagemaker_endpoint" "kitti_endpoint" {
   count = var.deploy_sagemaker_endpoint ? 1 : 0
 
   name                 = var.sagemaker_endpoint_name
-  endpoint_config_name = aws_sagemaker_endpoint_configuration.kitti_endpoint_config.name
+  endpoint_config_name = aws_sagemaker_endpoint_configuration.kitti_endpoint_config[0].name
 
   tags = local.ai_tags
 }
@@ -490,6 +497,7 @@ resource "aws_api_gateway_deployment" "kitti_api" {
       aws_api_gateway_integration.predict_lambda.id,
       aws_api_gateway_integration.predict_options.id,
       aws_api_gateway_integration_response.predict_options_200.id,
+      var.api_cors_origin,
       aws_api_gateway_resource.health.id,
       aws_api_gateway_method.health_get.id,
       aws_api_gateway_integration.health_lambda.id
@@ -547,15 +555,4 @@ resource "aws_api_gateway_usage_plan_key" "kitti_usage_plan_key" {
   key_id        = aws_api_gateway_api_key.kitti_api_key.id
   key_type      = "API_KEY"
   usage_plan_id = aws_api_gateway_usage_plan.kitti_usage_plan.id
-}
-
-
-
-
-# =========================================================================
-# PARCHE DE EMERGENCIA: PERMISOS DE ETIQUETADO PARA STEP FUNCTIONS
-# =========================================================================
-resource "aws_iam_role_policy_attachment" "step_functions_sagemaker_patch" {
-  role       = "KittiStepFunctionsRole"
-  policy_arn = "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess"
 }

@@ -58,21 +58,57 @@ variable "model_artifacts_bucket_arn" {
   description = "ARN del bucket S3 para artefactos del modelo"
 }
 
+variable "mode" {
+  type        = string
+  default     = "full"
+  description = "Modo de entrenamiento del pipeline"
+}
+
+variable "epochs" {
+  type        = number
+  default     = 100
+  description = "Numero de epocas para entrenamiento"
+}
+
+variable "training_image_size" {
+  type        = number
+  default     = 640
+  description = "Tamano de imagen para entrenamiento YOLOv8"
+}
+
+variable "training_batch_size" {
+  type        = number
+  default     = 8
+  description = "Batch size para entrenamiento YOLOv8"
+}
+
+variable "yolo_model" {
+  type        = string
+  default     = "yolov8m.pt"
+  description = "Modelo base de YOLOv8"
+}
+
+variable "training_max_runtime_seconds" {
+  type        = number
+  default     = 28800
+  description = "Tiempo maximo del training job en segundos"
+}
+
 variable "training_instance_type" {
   type        = string
-  default     = "ml.m5.xlarge"
+  default     = "ml.g4dn.xlarge"
   description = "Tipo de instancia para el entrenamiento en SageMaker"
 }
 
 variable "endpoint_instance_type" {
   type        = string
-  default     = "ml.t2.medium"
+  default     = "ml.g4dn.xlarge"
   description = "Tipo de instancia para el endpoint real-time de SageMaker"
 }
 
 variable "deploy_sagemaker_endpoint" {
   type        = bool
-  default     = false
+  default     = true
   description = "Controla si se crea el endpoint real-time de SageMaker"
 }
 

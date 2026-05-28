@@ -15,3 +15,5 @@ http://localhost:5173
 ```
 
 El navegador permite acceso a camara en `localhost`. Pega tu API key en el campo `API key` antes de usar `Predict`.
+
+En AWS, Terraform genera `config.js` con la URL real de API Gateway y lo sube al bucket del frontend.

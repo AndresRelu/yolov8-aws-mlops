@@ -54,10 +54,38 @@ variable "sagemaker_endpoint_name" {
   type = string
 }
 
+variable "mode" {
+  type = string
+}
+
+variable "epochs" {
+  type = number
+}
+
+variable "training_image_size" {
+  type = number
+}
+
+variable "training_batch_size" {
+  type = number
+}
+
+variable "yolo_model" {
+  type = string
+}
+
+variable "training_max_runtime_seconds" {
+  type = number
+}
+
 variable "training_instance_type" {
   type = string
 }
 
 variable "endpoint_instance_type" {
   type = string
+}
+
+variable "deploy_sagemaker_endpoint" {
+  type = bool
 }

@@ -23,10 +23,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Script de entrenamiento YOLOv8 en AWS SageMaker")
     
     # Parámetros enviados por SageMaker e hiperparámetros del modelo
-    parser.add_argument("--epochs", type=int, default=5, help="Número de épocas de entrenamiento")
+    parser.add_argument("--mode", type=str, default="full", choices=["sample", "full"], help="Modo de entrenamiento")
+    parser.add_argument("--epochs", type=int, default=100, help="Número de épocas de entrenamiento")
     parser.add_argument("--imgsz", type=int, default=640, help="Tamaño de la imagen de entrada")
     parser.add_argument("--batch", type=int, default=8, help="Tamaño del batch de entrenamiento")
-    parser.add_argument("--model", type=str, default="yolov8n.pt", help="Modelo base de YOLOv8")
+    parser.add_argument("--model", type=str, default="yolov8m.pt", help="Modelo base de YOLOv8")
     
     # Directorios del entorno estándar de SageMaker
     parser.add_argument("--model-dir", type=str, default=os.environ.get("SM_MODEL_DIR", "/opt/ml/model"))
@@ -39,7 +40,7 @@ def main():
     os.makedirs(args.model_dir, exist_ok=True)
     
     print("🎬 Inicializando proceso de entrenamiento...")
-    print(f"📋 Hiperparámetros recibidos -> Epochs: {args.epochs}, Image Size: {args.imgsz}, Batch Size: {args.batch}, Base Model: {args.model}")
+    print(f"📋 Hiperparámetros recibidos -> Mode: {args.mode}, Epochs: {args.epochs}, Image Size: {args.imgsz}, Batch Size: {args.batch}, Base Model: {args.model}")
     
     # 3. Ruta absoluta del dataset montado automáticamente por el canal de SageMaker
     dataset_yaml = "/opt/ml/input/data/dataset/kitti.yaml"

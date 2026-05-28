@@ -21,9 +21,39 @@ output "model_artifacts_bucket_uri" {
   value       = "s3://${local.model_artifacts_bucket}"
 }
 
+output "frontend_bucket_name" {
+  description = "Bucket S3 que almacena el frontend estatico."
+  value       = module.frontend.bucket_name
+}
+
+output "frontend_cloudfront_distribution_id" {
+  description = "ID de la distribucion CloudFront del frontend."
+  value       = module.frontend.cloudfront_distribution_id
+}
+
+output "frontend_s3_website_endpoint" {
+  description = "Endpoint S3 Static Website Hosting configurado para el frontend."
+  value       = module.frontend.website_endpoint
+}
+
+output "frontend_cloudfront_domain_name" {
+  description = "Dominio publico de CloudFront para el frontend."
+  value       = module.frontend.cloudfront_domain_name
+}
+
+output "frontend_url" {
+  description = "URL HTTPS publica para abrir el frontend."
+  value       = module.frontend.cloudfront_url
+}
+
 output "sagemaker_endpoint_name" {
   description = "Nombre del endpoint de SageMaker usado por la API REST."
   value       = module.ai-inference.sagemaker_endpoint_name
+}
+
+output "sagemaker_endpoint_arn" {
+  description = "ARN del endpoint real-time de SageMaker cuando deploy_sagemaker_endpoint=true."
+  value       = module.ai-inference.sagemaker_endpoint_arn
 }
 
 output "api_base_url" {
@@ -54,4 +84,29 @@ output "training_results_lambda_name" {
 output "cloudwatch_dashboard_name" {
   description = "Nombre del dashboard CloudWatch del proyecto."
   value       = module.observability.dashboard_name
+}
+
+output "training_mode" {
+  description = "Modo de entrenamiento configurado."
+  value       = var.mode
+}
+
+output "training_epochs" {
+  description = "Epocas configuradas para entrenamiento."
+  value       = var.epochs
+}
+
+output "training_yolo_model" {
+  description = "Modelo base YOLOv8 configurado."
+  value       = var.yolo_model
+}
+
+output "training_instance_type" {
+  description = "Instancia de entrenamiento configurada."
+  value       = var.training_instance_type
+}
+
+output "endpoint_instance_type" {
+  description = "Instancia de inferencia configurada."
+  value       = var.endpoint_instance_type
 }

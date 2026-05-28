@@ -82,9 +82,9 @@
     "BuildTrainingNames": {
       "Type": "Pass",
       "Parameters": {
-        "TrainingJobName.$": "States.Format('kitti-yolov8-training-{}', States.UUID())",
-        "ModelName.$": "States.Format('kitti-yolov8-model-{}', States.UUID())",
-        "EndpointConfigName.$": "States.Format('kitti-y8-epc-{}', States.UUID())",
+        "TrainingJobName.$": "States.Format('kitti-yolov8-training-${mode}-{}', States.UUID())",
+        "ModelName.$": "States.Format('kitti-yolov8-model-${mode}-{}', States.UUID())",
+        "EndpointConfigName.$": "States.Format('kitti-y8-epc-${mode}-{}', States.UUID())",
         "DeployEndpoint.$": "$.prepare_yolo.Payload.deploy_endpoint",
         "DatasetUri.$": "$.prepare_yolo.Payload.dataset_s3_uri"
       },
@@ -122,15 +122,16 @@
           "VolumeSizeInGB": 50
         },
         "StoppingCondition": {
-          "MaxRuntimeInSeconds": 7200
+          "MaxRuntimeInSeconds.$": "States.StringToJson('${training_max_runtime_seconds}')"
         },
         "HyperParameters": {
+          "mode": "${mode}",
           "sagemaker_program": "train.py",
           "sagemaker_submit_directory": "${sagemaker_source_uri}",
-          "epochs": "5",
-          "imgsz": "640",
-          "batch": "8",
-          "model": "yolov8n.pt"
+          "epochs": "${epochs}",
+          "imgsz": "${training_image_size}",
+          "batch": "${training_batch_size}",
+          "model": "${yolo_model}"
         }
       },
       "ResultPath": "$.training",

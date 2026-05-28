@@ -1,4 +1,5 @@
-const DEFAULT_API_BASE_URL = "https://15sd6fc639.execute-api.us-east-1.amazonaws.com/dev";
+const APP_CONFIG = window.KITTI_CONFIG || {};
+const DEFAULT_API_BASE_URL = APP_CONFIG.apiBaseUrl || "";
 
 const els = {
   apiBaseUrl: document.querySelector("#apiBaseUrl"),

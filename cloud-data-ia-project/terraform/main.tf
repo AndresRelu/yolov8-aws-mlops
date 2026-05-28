@@ -71,21 +71,47 @@ module "data-eng" {
   depends_on = [module.storage]
 }
 
+module "frontend" {
+  source = "./modules/frontend"
+
+  project_name         = var.project_name
+  environment          = var.environment
+  frontend_bucket_name = local.frontend_bucket_name
+  frontend_source_dir  = "${path.module}/../frontend"
+}
+
+locals {
+  effective_api_cors_origin = var.api_cors_origin != null && var.api_cors_origin != "" ? var.api_cors_origin : module.frontend.cloudfront_origin
+
+  frontend_runtime_config = "window.KITTI_CONFIG = ${jsonencode({
+    apiBaseUrl             = module.ai-inference.api_base_url
+    environment            = var.environment
+    sagemakerEndpointName  = var.sagemaker_endpoint_name
+    cloudfrontDistribution = module.frontend.cloudfront_distribution_id
+  })};\n"
+}
+
 
 # Módulo 3: AI + Inferencia + API REST (Fase B / B.5)
 module "ai-inference" {
   source = "./modules/ai-inference"
 
-  aws_region                = var.aws_region
-  account_id                = local.account_id
-  project_name              = var.project_name
-  environment               = var.environment
-  sagemaker_endpoint_name   = var.sagemaker_endpoint_name
-  training_instance_type    = var.training_instance_type
-  endpoint_instance_type    = var.endpoint_instance_type
-  deploy_sagemaker_endpoint = var.deploy_sagemaker_endpoint
-  api_stage_name            = var.api_stage_name
-  api_cors_origin           = var.api_cors_origin
+  aws_region                   = var.aws_region
+  account_id                   = local.account_id
+  project_name                 = var.project_name
+  environment                  = var.environment
+  sagemaker_endpoint_name      = var.sagemaker_endpoint_name
+  mode                         = var.mode
+  epochs                       = var.epochs
+  training_image_size          = var.training_image_size
+  training_batch_size          = var.training_batch_size
+  yolo_model                   = var.yolo_model
+  training_max_runtime_seconds = var.training_max_runtime_seconds
+  training_instance_type       = var.training_instance_type
+  endpoint_instance_type       = var.endpoint_instance_type
+  deploy_sagemaker_endpoint    = var.deploy_sagemaker_endpoint
+  api_stage_name               = var.api_stage_name
+  api_cors_origin              = local.effective_api_cors_origin
 
   raw_bucket_name             = local.raw_bucket_name
   raw_bucket_arn              = module.storage.raw_bucket_arn
@@ -96,28 +122,46 @@ module "ai-inference" {
   model_artifacts_bucket_name = local.model_artifacts_bucket
   model_artifacts_bucket_arn  = module.storage.model_artifacts_bucket_arn
 
-  depends_on = [module.storage]
+  depends_on = [module.storage, module.frontend]
+}
+
+resource "aws_s3_object" "frontend_runtime_config" {
+  bucket        = module.frontend.bucket_name
+  key           = "config.js"
+  content       = local.frontend_runtime_config
+  content_type  = "application/javascript; charset=utf-8"
+  cache_control = "no-store, max-age=0"
+  etag          = md5(local.frontend_runtime_config)
+
+  depends_on = [module.ai-inference]
 }
 
 module "orchestration" {
   source = "./modules/orchestration"
 
-  aws_region              = var.aws_region
-  account_id              = local.account_id
-  project_name            = var.project_name
-  environment             = var.environment
-  notification_email      = var.notification_email
-  raw_bucket_name         = local.raw_bucket_name
-  raw_bucket_arn          = module.storage.raw_bucket_arn
-  curated_bucket_name     = local.curated_bucket_name
-  curated_bucket_arn      = module.storage.curated_bucket_arn
-  model_artifacts_bucket  = local.model_artifacts_bucket
-  glue_crawler_name       = "kitti-labels-crawler"
-  glue_job_name           = module.data-eng.glue_job_name
-  sagemaker_role_arn      = module.ai-inference.sagemaker_role_arn
-  sagemaker_endpoint_name = var.sagemaker_endpoint_name
-  training_instance_type  = var.training_instance_type
-  endpoint_instance_type  = var.endpoint_instance_type
+  aws_region                   = var.aws_region
+  account_id                   = local.account_id
+  project_name                 = var.project_name
+  environment                  = var.environment
+  notification_email           = var.notification_email
+  raw_bucket_name              = local.raw_bucket_name
+  raw_bucket_arn               = module.storage.raw_bucket_arn
+  curated_bucket_name          = local.curated_bucket_name
+  curated_bucket_arn           = module.storage.curated_bucket_arn
+  model_artifacts_bucket       = local.model_artifacts_bucket
+  glue_crawler_name            = "kitti-labels-crawler"
+  glue_job_name                = module.data-eng.glue_job_name
+  sagemaker_role_arn           = module.ai-inference.sagemaker_role_arn
+  sagemaker_endpoint_name      = var.sagemaker_endpoint_name
+  mode                         = var.mode
+  epochs                       = var.epochs
+  training_image_size          = var.training_image_size
+  training_batch_size          = var.training_batch_size
+  yolo_model                   = var.yolo_model
+  training_max_runtime_seconds = var.training_max_runtime_seconds
+  training_instance_type       = var.training_instance_type
+  endpoint_instance_type       = var.endpoint_instance_type
+  deploy_sagemaker_endpoint    = var.deploy_sagemaker_endpoint
 
   depends_on = [module.data-eng, module.ai-inference]
 }

@@ -1,10 +1,28 @@
 import os
 import argparse
+import sys
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import boto3
 from botocore.config import Config
 from boto3.s3.transfer import TransferConfig
 from tqdm import tqdm
+
+
+def list_existing_sizes(s3_client, bucket, prefix):
+    existing = {}
+    paginator = s3_client.get_paginator("list_objects_v2")
+
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            existing[obj["Key"]] = obj["Size"]
+
+    return existing
+
+
+def upload_one(s3_client, transfer_config, bucket, local_path, key):
+    s3_client.upload_file(str(local_path), bucket, key, Config=transfer_config)
+    return key
 
 def main():
     # 1. CONFIGURACIÓN DE ARGUMENTOS POR CLI
@@ -15,20 +33,27 @@ def main():
     parser.add_argument("--sample-size", type=int, default=100, help="Cantidad de archivos para la muestra")
     parser.add_argument("--profile", default="kitti-ml", help="Perfil de AWS CLI a usar")
     parser.add_argument("--region", default="us-east-1", help="Región de AWS")
+    parser.add_argument("--workers", type=int, default=16, help="Subidas simultáneas")
+    parser.add_argument("--max-attempts", type=int, default=20, help="Reintentos máximos por operación S3")
+    parser.add_argument("--force", action="store_true", help="Re-subir aunque el archivo ya exista con el mismo tamaño")
     args = parser.parse_args()
 
     # 2. INICIALIZAR SESIÓN DE BOTO3 CON EL PERFIL CONFIGURADO
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     
-    # Configuración de reintentos agresiva por si falla el internet (estándar, 10 intentos)
-    s3_config = Config(retries={"max_attempts": 10, "mode": "standard"})
+    # Configuración de reintentos agresiva por si falla el internet.
+    s3_config = Config(
+        retries={"max_attempts": args.max_attempts, "mode": "adaptive"},
+        max_pool_connections=max(args.workers * 2, 10),
+        s3={"us_east_1_regional_endpoint": "regional"},
+    )
     s3_client = session.client("s3", config=s3_config)
 
     # Configuración de subida Multipart en paralelo para optimizar velocidad
     transfer_config = TransferConfig(
         multipart_threshold=8 * 1024 * 1024,  # 8 MB
         multipart_chunksize=8 * 1024 * 1024,  # 8 MB
-        max_concurrency=8                     # 8 hilos simultáneos
+        max_concurrency=4
     )
 
     # 3. EMPAREJAR Y VALIDAR ARCHIVOS LOCALES
@@ -63,29 +88,60 @@ def main():
     # 4. PROCESO DE SUBIDA A S3
     uploaded_images = 0
     uploaded_labels = 0
+    skipped_images = 0
+    skipped_labels = 0
     total_bytes = 0
+    failures = []
 
     print(f"📤 Iniciando subida al bucket: {args.raw_bucket}")
-    
-    # tqdm se encarga de pintar la barra de progreso en la terminal
-    for img_p, lbl_p in tqdm(upload_pairs, desc="Subiendo KITTI", unit="par"):
+
+    existing = {}
+    if not args.force:
+        print("🔎 Revisando archivos existentes en S3 para subir solo faltantes...")
+        existing.update(list_existing_sizes(s3_client, args.raw_bucket, "images/"))
+        existing.update(list_existing_sizes(s3_client, args.raw_bucket, "labels/"))
+
+    upload_tasks = []
+    for img_p, lbl_p in upload_pairs:
+        img_size = img_p.stat().st_size
+        lbl_size = lbl_p.stat().st_size
+        total_bytes += img_size + lbl_size
+
         s3_img_key = f"images/{img_p.name}"
         s3_lbl_key = f"labels/{lbl_p.name}"
-        
-        # Calcular peso para las métricas finales
-        total_bytes += img_p.stat().st_size + lbl_p.stat().st_size
 
-        try:
-            # Subir imagen
-            s3_client.upload_file(str(img_p), args.raw_bucket, s3_img_key, Config=transfer_config)
-            uploaded_images += 1
-            
-            # Subir etiqueta
-            s3_client.upload_file(str(lbl_p), args.raw_bucket, s3_lbl_key, Config=transfer_config)
-            uploaded_labels += 1
-        except Exception as e:
-            print(f"\n❌ Error subiendo el par {img_p.stem}: {e}")
-            break
+        if not args.force and existing.get(s3_img_key) == img_size:
+            skipped_images += 1
+        else:
+            upload_tasks.append(("image", img_p, s3_img_key))
+
+        if not args.force and existing.get(s3_lbl_key) == lbl_size:
+            skipped_labels += 1
+        else:
+            upload_tasks.append(("label", lbl_p, s3_lbl_key))
+
+    print(
+        f"📌 Ya existen correctos: {skipped_images} imágenes, {skipped_labels} labels. "
+        f"Pendientes: {len(upload_tasks)} archivos."
+    )
+
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = {
+            executor.submit(upload_one, s3_client, transfer_config, args.raw_bucket, local_path, key): (kind, key)
+            for kind, local_path, key in upload_tasks
+        }
+
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Subiendo KITTI", unit="archivo"):
+            kind, key = futures[future]
+            try:
+                future.result()
+                if kind == "image":
+                    uploaded_images += 1
+                else:
+                    uploaded_labels += 1
+            except Exception as e:
+                failures.append((key, str(e)))
+                tqdm.write(f"❌ Error subiendo {key}: {e}")
 
     # 5. IMPRIMIR MÉTRICAS FINALES REQUERIDAS
     total_mb = total_bytes / (1024 * 1024)
@@ -93,10 +149,17 @@ def main():
     print("🎉 ¡PROCESO DE SUBIDA FINALIZADO!")
     print("="*40)
     print(f"📦 Bucket Destino:    {args.raw_bucket}")
-    print(f"🖼️ Imágenes Subidas:  {uploaded_images}")
-    print(f"📄 Labels Subidos:    {uploaded_labels}")
+    print(f"🖼️ Imágenes Subidas:  {uploaded_images} nuevas, {skipped_images} ya estaban")
+    print(f"📄 Labels Subidos:    {uploaded_labels} nuevos, {skipped_labels} ya estaban")
     print(f"💾 Total Transmitido: {total_mb:.2f} MB")
+    print(f"❌ Fallos:            {len(failures)}")
     print("="*40)
 
+    if failures:
+        print("Vuelve a ejecutar el mismo comando; el script saltará lo que ya quedó en S3.")
+        return 1
+
+    return 0
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -12,6 +12,19 @@ RAW_BUCKET = os.environ["RAW_BUCKET"]
 CURATED_BUCKET = os.environ["CURATED_BUCKET"]
 YOLO_PREFIX = os.environ.get("YOLO_PREFIX", "yolo_dataset/").strip("/")
 DATASET_S3_URI = f"s3://{CURATED_BUCKET}/{YOLO_PREFIX}/"
+DEFAULT_MODE = os.environ.get("DEFAULT_MODE", "sample")
+DEFAULT_SAMPLE_SIZE = int(os.environ.get("DEFAULT_SAMPLE_SIZE", "100"))
+
+
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+
+DEFAULT_DEPLOY_ENDPOINT = parse_bool(os.environ.get("DEFAULT_DEPLOY_ENDPOINT", "false"))
 
 
 def log(level, event, **fields):
@@ -46,9 +59,9 @@ def put_storage_metrics(total_objects, train_images, val_images):
 
 def lambda_handler(event, context):
     event = event or {}
-    mode = event.get("mode", "sample")
-    sample_size = int(event.get("sample_size", 100))
-    deploy_endpoint = bool(event.get("deploy_endpoint", False))
+    mode = event.get("mode") or DEFAULT_MODE
+    sample_size = int(event.get("sample_size", DEFAULT_SAMPLE_SIZE))
+    deploy_endpoint = parse_bool(event.get("deploy_endpoint", DEFAULT_DEPLOY_ENDPOINT))
 
     yaml_key = f"{YOLO_PREFIX}/kitti.yaml"
     train_prefix = f"{YOLO_PREFIX}/images/train/"
